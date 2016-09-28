@@ -118,7 +118,7 @@ __global__ void fit_pulses(const short* trace,
     phase_index = POINTSPERSAMPLE - 1;
     weight_high = 1;
   }
-  unsigned int low_index = phase_index * POINTSPERSAMPLE + sample_index;
+  unsigned int low_index = phase_index * SAMPLESPERFIT + sample_index;
   unsigned int high_index = low_index + SAMPLESPERFIT;
   float low_value = d_templates[segment_num].table[low_index];
   float high_value = d_templates[segment_num].table[high_index];

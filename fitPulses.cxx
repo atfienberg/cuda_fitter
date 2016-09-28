@@ -424,7 +424,7 @@ double evalPhaseGroupedTemplate(float phase, unsigned int sampleIndex,
     phase_index = POINTSPERSAMPLE - 1;
     weight_high = 1;
   }
-  int low_index = phase_index * POINTSPERSAMPLE + sampleIndex;
+  int low_index = phase_index * SAMPLESPERFIT + sampleIndex;
   float low_point = templ[low_index];
   int high_index = low_index + SAMPLESPERFIT;
   float high_point = templ[high_index];
