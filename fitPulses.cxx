@@ -11,6 +11,7 @@
 #include "TSpline.h"
 #include "TF1.h"
 #include "TH1.h"
+#include "TH2.h"
 #include <set>
 
 // header for this little example
@@ -48,6 +49,20 @@ int main() {
   std::cout << "loading templates..." << std::endl;
   std::vector<phaseMap> pmaps(NSEGMENTS);
   std::vector<pulseTemplate> templates(NSEGMENTS);
+
+  std::unique_ptr<TGraph> phaseTemplate(new TGraph(0));
+  phaseTemplate->SetName("phaseTemplate");
+  phaseTemplate->SetTitle("phaseTemplate;template index;");
+  std::unique_ptr<TGraph> phaseTemplate10(new TGraph(0));
+  phaseTemplate10->SetName("phaseTemplate10");
+  phaseTemplate10->SetTitle("phaseTemplate10;template index;");
+  std::unique_ptr<TGraph> timeTemplate(new TGraph(0));
+  timeTemplate->SetName("timeTemplate");
+  timeTemplate->SetTitle("timeTemplate;template index;");
+  std::unique_ptr<TGraph> timeTemplate10(new TGraph(0));
+  timeTemplate10->SetName("timeTemplate10");
+  timeTemplate10->SetTitle("timeTemplate10;template index;");
+
   for (unsigned int i = 0; i < pmaps.size(); ++i) {
     std::unique_ptr<TFile> templFile(new TFile(Form(
         "../art/../art/srcs/gm2calo/g2RunTimeFiles/laserTemplates/"
@@ -80,6 +95,22 @@ int main() {
         int index = phase_i * POINTSPERSAMPLE + sample;
         double phase = static_cast<double>(phase_i) / POINTSPERSAMPLE;
         templates[i].table[index] = pulseSpline->Eval(xmin + phase + sample);
+        if (i == 24) {
+          phaseTemplate->SetPoint(phaseTemplate->GetN(), index,
+                                  templates[i].table[index]);
+          timeTemplate->SetPoint(
+              timeTemplate->GetN(), index,
+              pulseSpline->Eval(xmin +
+                                static_cast<double>(index) / POINTSPERSAMPLE));
+          if (phase_i == 10 || phase_i == 11) {
+            phaseTemplate10->SetPoint(phaseTemplate10->GetN(), index,
+                                      templates[i].table[index]);
+            timeTemplate10->SetPoint(
+                timeTemplate10->GetN(),
+                floor(static_cast<double>(phase + sample) * POINTSPERSAMPLE),
+                templates[i].table[index]);
+          }
+        }
       }
     }
   }
@@ -220,9 +251,16 @@ int main() {
   std::unique_ptr<TH1D> phaseHist(
       new TH1D("phaseHist", "phaseHist", 100, 0, 1));
   std::unique_ptr<TH1D> timeDiffHist(
-      new TH1D("timeDiffHist", "t_{gpu} - t_{offline}", 100, 0.0, 0.0));
+      new TH1D("timeDiffHist", "t_{gpu} - t_{offline}", 1000, 0.0, 0.0));
   std::unique_ptr<TH1D> energyDiffHist(new TH1D(
       "energyDiffHist", "energy_{gpu} - energy_{offline}", 100, 0.0, 0.0));
+  std::unique_ptr<TH2D> energyCorrelation(
+      new TH2D("energyCorrelation", ";energy_{offline};energy_{gpu}", 100, 0.0,
+               0.0, 100, 0.0, 0.0));
+  std::unique_ptr<TH2D> timeCorrelation(
+      new TH2D("timeCorrelation",
+               ";time_{offline} - peak sample;time_{gpu} - peak sample", 100,
+               0.0, 0.0, 100, 0.0, 0.0));
   for (unsigned int i = 0; i < NSEGMENTS; ++i) {
     frgraphs.emplace_back(new TGraph(0));
     TGraph* frg = frgraphs.back().get();
@@ -256,8 +294,14 @@ int main() {
               return std::abs(r.time - result.time) < 1;
             });
         if (matchingFRIter != endIter) {
-          timeDiffHist->Fill(result.time - matchingFRIter->time);
+          timeDiffHist->Fill(
+              (result.peak_index + 0.5 - result.phase - pmaps[i].timeOffset) -
+              matchingFRIter->time);
           energyDiffHist->Fill(result.energy - matchingFRIter->energy);
+          energyCorrelation->Fill(matchingFRIter->energy, result.energy);
+          timeCorrelation->Fill(matchingFRIter->time - result.peak_index,
+                                result.peak_index + 0.5 - result.phase -
+                                    pmaps[i].timeOffset - result.peak_index);
         }
       }
     }
@@ -271,6 +315,68 @@ int main() {
   phaseHist->Write();
   timeDiffHist->Write();
   energyDiffHist->Write();
+  phaseTemplate->Write();
+  timeTemplate->Write();
+  phaseTemplate10->Write();
+  timeTemplate10->Write();
+  energyCorrelation->Write();
+  timeCorrelation->Write();
+
+  std::vector<char> bankbuff(sizeof(pulseFinderResultCollection) * NSEGMENTS +
+                             sizeof(unsigned int) * NSEGMENTS);
+  std::cout
+      << "testing time to flatten fit results into midas bank like array: "
+      << std::endl;
+  start = std::chrono::high_resolution_clock::now();
+  // write in the number of segments
+  unsigned int* nSegsP = (unsigned int*)bankbuff.data();
+  *nSegsP = NSEGMENTS;
+  char* datap = bankbuff.data() + sizeof(unsigned int);
+  for (pulseFinderResultCollection* iter = gpu_results;
+       iter != gpu_results + NSEGMENTS; ++iter) {
+    // pack in nPulses
+    unsigned int* dataPuint = (unsigned int*)datap;
+    *dataPuint = iter->nPulses;
+
+    pulseFinderResult* dataPfit_result = (pulseFinderResult*)(dataPuint + 1);
+    datap = (char*)std::copy(
+        iter->fit_results, iter->fit_results + iter->nPulses, dataPfit_result);
+  }
+  end = std::chrono::high_resolution_clock::now();
+  std::cout << "time for bank packing: "
+            << std::chrono::duration_cast<std::chrono::microseconds>(
+                   end - start).count() << " microseconds" << std::endl;
+  std::cout << "bank size: " << std::distance(bankbuff.data(), datap) / 1000.0
+            << " kilobytes" << std::endl;
+
+  std::cout << "testing time to unpack midas bank like array: " << std::endl;
+  start = std::chrono::high_resolution_clock::now();
+  unsigned int nsegsUnpacked = *(unsigned int*)bankbuff.data();
+  typedef std::vector<pulseFinderResult> fitResultCollection;
+  std::vector<fitResultCollection> unpackerResults(nsegsUnpacked);
+
+  datap = (char*)(bankbuff.data() + sizeof(unsigned int));
+  for (unsigned int i = 0; i < nsegsUnpacked; ++i) {
+    unsigned int* nPulsesp = (unsigned int*)datap;
+    auto npulses = *nPulsesp;
+
+    unpackerResults[i].resize(npulses);
+    pulseFinderResult* dataPfresults = (pulseFinderResult*)(nPulsesp + 1);
+    std::copy(dataPfresults, dataPfresults + npulses,
+              unpackerResults[i].begin());
+    datap = (char*)(dataPfresults + npulses);
+  }
+  end = std::chrono::high_resolution_clock::now();
+  std::cout << "time for bank unpacking: "
+            << std::chrono::duration_cast<std::chrono::microseconds>(
+                   end - start).count() << " microseconds" << std::endl << std::endl;
+                   
+  std::cout << "test a pulse for unpacking integrity: seg 15 pulse 32" << std::endl;
+  const auto& r = unpackerResults[15][32];
+  std::cout << "energy: " << r.energy << std::endl;
+  std::cout << "time: " << r.time << std::endl;
+  std::cout << "phase: " << r.phase << std::endl;
+  std::cout << "chi2: " << r.chi2 << std::endl;
 
   std::cout << "closing gpu" << std::endl;
   free_pinned(host_trace_buf);
@@ -297,14 +403,14 @@ void cpu_process(const short* trace, pulseFinderResultCollection* cpu_results,
   tbb::parallel_for(
       std::size_t(0), std::size_t(NSEGMENTS), [&](std::size_t seg) {
         cpu_results[seg].nPulses = 0;
-        for (unsigned int i = PEAKINDEXINFIT;
+        for (unsigned int i = MINFITTIME;
              i < TRACELEN - (SAMPLESPERFIT - PEAKINDEXINFIT - 1); ++i) {
           short l, m, r;
           l = trace[seg * TRACELEN + i - 1];
           m = trace[seg * TRACELEN + i];
           r = trace[seg * TRACELEN + i + 1];
           if ((m < THRESHOLD) && ((m <= l) && (m < r))) {
-            // found pulse, fit
+            //            found pulse, fit
             const short* subtrace = &trace[seg * TRACELEN + i - PEAKINDEXINFIT];
             const short* min_iter = &trace[seg * TRACELEN + i];
 
@@ -347,16 +453,18 @@ void cpu_process(const short* trace, pulseFinderResultCollection* cpu_results,
               s = -1 * s;
             }
 
-            // record results
             auto i_res = cpu_results[seg].nPulses;
-            cpu_results[seg].nPulses += 1;
-            cpu_results[seg].fit_results[i_res].time = time;
-            cpu_results[seg].fit_results[i_res].phase = phase;
-            cpu_results[seg].fit_results[i_res].energy = s;
-            cpu_results[seg].fit_results[i_res].pedestal = p;
-            cpu_results[seg].fit_results[i_res].chi2 = chi2;
-            cpu_results[seg].fit_results[i_res].peak_index = i;
-            cpu_results[seg].fit_results[i_res].peak_value = m;
+            // // record results
+            if (i_res < OUTPUTARRAYLEN) {
+              cpu_results[seg].nPulses += 1;
+              cpu_results[seg].fit_results[i_res].time = time;
+              cpu_results[seg].fit_results[i_res].phase = phase;
+              cpu_results[seg].fit_results[i_res].energy = s;
+              cpu_results[seg].fit_results[i_res].pedestal = p;
+              cpu_results[seg].fit_results[i_res].chi2 = chi2;
+              cpu_results[seg].fit_results[i_res].peak_index = i;
+              cpu_results[seg].fit_results[i_res].peak_value = m;
+            }
           }
         }
       });
@@ -406,7 +514,7 @@ bool check_results(pulseFinderResultCollection* cpu_results,
 double evalLinearTemplate(double val, const float* templ, double xMin,
                           double xMax) {
   //  double stepsPerTime = (1024 - 1) / (xMax - xMin);
-  double where = (val - xMin) * (1024 - 1) / (xMax - xMin);
+  double where = (val - xMin) * (NPOINTSPHASEMAP - 1) / (xMax - xMin);
   int low = std::floor(where);
   double dt = where - low;
   return templ[low] * (1 - dt) + templ[low + 1] * dt;
