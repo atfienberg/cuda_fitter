@@ -47,6 +47,7 @@ constexpr std::size_t phase_maps_size = sizeof(phaseMap) * NSEGMENTS;
 // this arrangement and definition allows for threads in GPU to only need access
 // to contiguous memory areas
 constexpr int PEAKINDEXINFIT = 9;
+constexpr int MINFITTIME = PEAKINDEXINFIT;
 // !warning, don't change samples per fit, it should be 32 to match nvidia warp
 // size
 constexpr std::size_t SAMPLESPERFIT = 32;

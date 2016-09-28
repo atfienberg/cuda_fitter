@@ -19,7 +19,7 @@ __global__ void find_times(const short* trace,
     uint trace_index = segment_num * TRACELEN + sample_num;
 
     // don't continue if your trace_index is out of bounds for pulse fitting
-    if (sample_num < 9 ||
+    if (sample_num < MINFITTIME ||
         sample_num >= TRACELEN - (SAMPLESPERFIT - PEAKINDEXINFIT - 1)) {
       return;
     }
