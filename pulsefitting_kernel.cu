@@ -12,7 +12,7 @@ __device__ phaseMap d_phase_maps[NSEGMENTS];
 __device__ pulseTemplate d_templates[NSEGMENTS];
 
 __global__ void find_times(const short* trace,
-                           pulseFinderResultCollection* resultcol) {
+                           pulseFinderResultCollection* resultcol, short threshold, short polarity) {
   for (uint segment_num = 0; segment_num < NSEGMENTS; ++segment_num) {
     // find index based on global id
     uint sample_num = blockIdx.x * blockDim.x + threadIdx.x;
@@ -25,16 +25,16 @@ __global__ void find_times(const short* trace,
     }
 
     // we need the samples at this point and surrounding (left, middle, right)
-    short m = trace[trace_index];
+    short m = polarity * trace[trace_index];
     // if this sample is a local minimum and is over threshold, record it
-    if (m < THRESHOLD) {
-      short l = trace[trace_index - 1];
-      short r = trace[trace_index + 1];
+    if (m > polarity * threshold) {
+      short l = polarity * trace[trace_index - 1];
+      short r = polarity * trace[trace_index + 1];
 
       // must be local minimum, but since we have digital ADC values
       // we must allow for max to equal sample on left, but not on right
       // if we allow max sample to equal right, we will fit same pulse twice
-      if ((m <= l) && (m < r)) {
+      if ((m >= l) && (m > r)) {
         uint pulse_index = atomicAdd(&resultcol[segment_num].nPulses, 1);
         if (pulse_index < OUTPUTARRAYLEN) {
           // find pulse time, phase
@@ -250,7 +250,7 @@ void gpu_process(short* host_trace, pulseFinderResultCollection* result_buff) {
             << std::endl;
   dim3 dimGrid(blocks_per_trace);
   start = std::chrono::high_resolution_clock::now();
-  find_times<<<dimGrid, dimBlock>>> (device_trace, device_result);
+  find_times<<<dimGrid, dimBlock>>> (device_trace, device_result, THRESHOLD, -1);
   cudaDeviceSynchronize();
   end = std::chrono::high_resolution_clock::now();
   std::cout << "time for find pulses computation on GPU : "
