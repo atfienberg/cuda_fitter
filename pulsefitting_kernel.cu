@@ -41,7 +41,7 @@ __global__ void find_times(const short* trace,
           // first calculate pseudo time
           float numerator = l - m;
           float denominator = r - m;
-          // denominator can't be zero because m < r
+          // denominator can't be zero because m > r
           float ptime = 2.0 / CUDART_PI_F * atan(numerator / denominator);
 
           // next interpolate time map table
